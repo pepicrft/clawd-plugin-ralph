@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { analyzeResponse, shouldExit } from "../src/ralph.js";
+import { analyzeResponse, buildCommitMessage, extractRalphSummary, shouldExit } from "../src/ralph.js";
 
 describe("response analysis", () => {
   it("detects exit signal and completion indicators", () => {
@@ -23,5 +23,15 @@ TESTS: not run`;
     const analysis = analyzeResponse(response);
     expect(analysis.exitSignal).toBe(false);
     expect(shouldExit(analysis, 2)).toBe(false);
+  });
+
+  it("extracts summary from the RALPH_STATUS block", () => {
+    const response = `RALPH_STATUS:\nEXIT_SIGNAL: true\nSUMMARY: Shipping\nNEXT_STEPS: none`;
+    expect(extractRalphSummary(response)).toBe("Shipping");
+  });
+
+  it("builds commit messages with a prefix", () => {
+    expect(buildCommitMessage("[ralph]", "All done")).toBe("[ralph] All done");
+    expect(buildCommitMessage("[ralph]", null)).toBe("[ralph] completion");
   });
 });

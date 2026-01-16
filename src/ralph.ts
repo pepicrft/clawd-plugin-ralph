@@ -27,6 +27,13 @@ export type RalphProjectConfigInput = {
   maxLoops?: number;
   sessionTimeoutHours?: number;
   runner?: RunnerConfigInput;
+  git?: {
+    enabled?: boolean;
+    onExit?: boolean;
+    push?: boolean;
+    commitPrefix?: string;
+    remote?: string;
+  };
 };
 
 export type RalphConfigInput = RalphProjectConfigInput & {
@@ -57,6 +64,13 @@ export type RalphConfig = {
   maxLoops: number;
   sessionTimeoutHours: number;
   runner: RunnerConfig;
+  git: {
+    enabled: boolean;
+    onExit: boolean;
+    push: boolean;
+    commitPrefix: string;
+    remote?: string;
+  };
 };
 
 export type RalphPluginConfig = {
@@ -119,6 +133,7 @@ const DEFAULT_HISTORY_FILE = ".ralph_session_history";
 const DEFAULT_EXIT_THRESHOLD = 2;
 const DEFAULT_MAX_LOOPS = 20;
 const DEFAULT_SESSION_TIMEOUT = 24;
+const DEFAULT_COMMIT_PREFIX = "[ralph]";
 
 const RALPH_STATUS_INSTRUCTIONS = `You must include a RALPH_STATUS block at the end of every response.
 
@@ -207,6 +222,7 @@ export function normalizeConfig(
     outputFormat: runnerInput.outputFormat ?? runnerDefaults.outputFormat,
     allowedTools: runnerInput.allowedTools,
   };
+  const gitInput = input.git ?? {};
 
   return {
     projectRoot,
@@ -224,6 +240,13 @@ export function normalizeConfig(
     maxLoops: input.maxLoops ?? DEFAULT_MAX_LOOPS,
     sessionTimeoutHours: input.sessionTimeoutHours ?? DEFAULT_SESSION_TIMEOUT,
     runner,
+    git: {
+      enabled: gitInput.enabled ?? true,
+      onExit: gitInput.onExit ?? true,
+      push: gitInput.push ?? true,
+      commitPrefix: gitInput.commitPrefix ?? DEFAULT_COMMIT_PREFIX,
+      remote: gitInput.remote,
+    },
   };
 }
 
@@ -363,6 +386,18 @@ export function shouldExit(analysis: RalphAnalysis, threshold: number): boolean 
   return analysis.exitSignal && analysis.completionIndicators >= threshold;
 }
 
+export function extractRalphSummary(text: string): string | null {
+  const match = text.match(/SUMMARY:\s*(.+)/i);
+  if (!match) return null;
+  return match[1].trim() || null;
+}
+
+export function buildCommitMessage(prefix: string, summary: string | null): string {
+  const cleanPrefix = prefix.trim() || DEFAULT_COMMIT_PREFIX;
+  if (summary) return `${cleanPrefix} ${summary}`;
+  return `${cleanPrefix} completion`;
+}
+
 export async function runRalphLoop(
   config: RalphConfig,
   options: { loops?: number; logger?: Console } = {}
@@ -412,6 +447,10 @@ export async function runRalphLoop(
       logger.info("Ralph exit conditions met.");
       break;
     }
+  }
+
+  if (shouldExit(lastAnalysis, config.exitIndicatorThreshold)) {
+    await maybeCommitOnExit(config, lastResponse, logger);
   }
 
   return {
@@ -485,6 +524,28 @@ async function runRunner(
     const message = String(error?.message || error);
     logger.error(`Runner failed: ${message}`);
     throw error;
+  }
+}
+
+async function maybeCommitOnExit(
+  config: RalphConfig,
+  responseText: string,
+  logger: Console
+): Promise<void> {
+  if (!config.git.enabled || !config.git.onExit) return;
+  if (!(await gitIsRepo(config.projectRoot))) return;
+
+  const hasChanges = await gitHasChanges(config.projectRoot);
+  if (!hasChanges) return;
+
+  const summary = extractRalphSummary(responseText);
+  const message = buildCommitMessage(config.git.commitPrefix, summary);
+  await gitCommit(config.projectRoot, message);
+
+  if (config.git.push) {
+    const branch = await gitCurrentBranch(config.projectRoot);
+    const remote = config.git.remote ?? "origin";
+    await gitPush(config.projectRoot, remote, branch);
   }
 }
 
@@ -606,4 +667,38 @@ async function fileExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function gitIsRepo(projectRoot: string): Promise<boolean> {
+  try {
+    const result = await execFileAsync("git", ["-C", projectRoot, "rev-parse", "--is-inside-work-tree"]);
+    return result.stdout.trim() === "true";
+  } catch {
+    return false;
+  }
+}
+
+async function gitCurrentBranch(projectRoot: string): Promise<string> {
+  const result = await execFileAsync("git", ["-C", projectRoot, "rev-parse", "--abbrev-ref", "HEAD"]);
+  return result.stdout.trim() || "main";
+}
+
+async function gitHasChanges(projectRoot: string): Promise<boolean> {
+  const result = await execFileAsync("git", ["-C", projectRoot, "status", "--porcelain"]);
+  return result.stdout.trim().length > 0;
+}
+
+async function gitCommit(projectRoot: string, message: string): Promise<void> {
+  await execFileAsync("git", ["-C", projectRoot, "add", "-A"]);
+  try {
+    await execFileAsync("git", ["-C", projectRoot, "commit", "-m", message]);
+  } catch (error: any) {
+    const messageText = String(error?.message || "");
+    if (messageText.includes("nothing to commit")) return;
+    throw error;
+  }
+}
+
+async function gitPush(projectRoot: string, remote: string, branch: string): Promise<void> {
+  await execFileAsync("git", ["-C", projectRoot, "push", remote, branch]);
 }

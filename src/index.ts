@@ -45,6 +45,11 @@ export default {
       sessionTimeoutHours: { label: "Session Timeout (hours)", placeholder: "24" },
       heartbeatFile: { label: "Heartbeat File", placeholder: ".ralph_heartbeat.json" },
       heartbeatIntervalMs: { label: "Heartbeat Interval (ms)", placeholder: "30000" },
+      "git.enabled": { label: "Git Enabled" },
+      "git.onExit": { label: "Git Commit On Exit" },
+      "git.push": { label: "Git Push On Exit" },
+      "git.commitPrefix": { label: "Git Commit Prefix", placeholder: "[ralph]" },
+      "git.remote": { label: "Git Remote", placeholder: "origin" },
     },
   },
   register(api: any) {

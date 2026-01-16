@@ -37,6 +37,13 @@ clawdbot plugins install github:pepicrft/clawd-plugin-ralph
           sessionTimeoutHours: 24,
           heartbeatFile: ".ralph_heartbeat.json",
           heartbeatIntervalMs: 30000,
+          git: {
+            enabled: true,
+            onExit: true,
+            push: true,
+            commitPrefix: "[ralph]",
+            remote: "origin"
+          },
           runner: {
             command: "claude",
             args: ["-p", "{prompt}"]
@@ -132,6 +139,7 @@ clawdbot ralph analyze --file response.txt
 1. Builds a unified prompt from `PROMPT.md`, `@fix_plan.md`, and `@AGENT.md`.
 2. Runs the configured CLI with a requirement to emit `RALPH_STATUS` including `EXIT_SIGNAL: true|false`.
 3. Parses the response and exits only when both completion indicators and the explicit exit signal are present.
+4. Optionally commits and pushes changes on completion (configurable via `git`).
 
 ## Requirements
 
