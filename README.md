@@ -31,6 +31,7 @@ clawdbot plugins install github:pepicrft/clawd-plugin-ralph
         enabled: true,
         config: {
           projectRoot: "/Users/you/ralph-project",
+          agent: "claude",
           provider: "claude",
           exitIndicatorThreshold: 2,
           maxLoops: 20,
@@ -114,8 +115,14 @@ clawdbot ralph init my-project
 # Print the compiled prompt
 clawdbot ralph prompt
 
+# Override agent label
+clawdbot ralph prompt --agent codex
+
 # Run one or more Ralph loops
 clawdbot ralph run --loops 3
+
+# Run with a specific agent label
+clawdbot ralph run --agent codex --loops 2
 
 # Check heartbeat status
 clawdbot ralph status

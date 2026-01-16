@@ -13,6 +13,7 @@ export type RunnerConfigInput = {
 
 export type RalphProjectConfigInput = {
   projectRoot?: string;
+  agent?: string;
   promptFile?: string;
   planFile?: string;
   agentFile?: string;
@@ -50,6 +51,7 @@ export type RunnerConfig = {
 
 export type RalphConfig = {
   projectRoot: string;
+  agent: string;
   promptFile: string;
   planFile: string;
   agentFile: string;
@@ -122,6 +124,7 @@ export type RalphHeartbeat = {
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_PROMPT_FILE = "PROMPT.md";
+const DEFAULT_AGENT = "claude";
 const DEFAULT_PLAN_FILE = "@fix_plan.md";
 const DEFAULT_AGENT_FILE = "@AGENT.md";
 const DEFAULT_SPECS_DIR = "specs";
@@ -226,6 +229,7 @@ export function normalizeConfig(
 
   return {
     projectRoot,
+    agent: input.agent ?? DEFAULT_AGENT,
     promptFile: input.promptFile ?? DEFAULT_PROMPT_FILE,
     planFile: input.planFile ?? DEFAULT_PLAN_FILE,
     agentFile: input.agentFile ?? DEFAULT_AGENT_FILE,
@@ -346,20 +350,21 @@ async function writeIfMissing(
   await fsp.writeFile(filePath, contents, "utf-8");
 }
 
-export async function buildRalphPrompt(paths: RalphPaths): Promise<string> {
+export async function buildRalphPrompt(paths: RalphPaths, agent: string): Promise<string> {
   const prompt = await readFileIfExists(paths.promptPath);
   const plan = await readFileIfExists(paths.planPath);
-  const agent = await readFileIfExists(paths.agentPath);
+  const agentFile = await readFileIfExists(paths.agentPath);
 
   const sections = [
     "# Ralph Instructions",
     RALPH_STATUS_INSTRUCTIONS,
+    `Agent: ${agent}`,
     "## PROMPT.md",
     prompt || "(missing PROMPT.md)",
     "## @fix_plan.md",
     plan || "(missing @fix_plan.md)",
     "## @AGENT.md",
-    agent || "(missing @AGENT.md)",
+    agentFile || "(missing @AGENT.md)",
   ];
 
   return sections.join("\n\n");
@@ -400,11 +405,12 @@ export function buildCommitMessage(prefix: string, summary: string | null): stri
 
 export async function runRalphLoop(
   config: RalphConfig,
-  options: { loops?: number; logger?: Console } = {}
+  options: { loops?: number; logger?: Console; agent?: string } = {}
 ): Promise<RalphLoopResult> {
   const logger = options.logger ?? console;
   const paths = await ensureProjectStructure(config);
   const loops = options.loops ?? config.maxLoops;
+  const agent = options.agent ?? config.agent;
 
   let lastResponse = "";
   let lastAnalysis: RalphAnalysis = {
@@ -420,7 +426,7 @@ export async function runRalphLoop(
   let loopsRun = 0;
 
   for (let i = 0; i < loops; i += 1) {
-    const prompt = await buildRalphPrompt(paths);
+    const prompt = await buildRalphPrompt(paths, agent);
     const response = await runRunner(config.runner, prompt, session.sessionId, logger);
     const text = extractTextFromRunnerOutput(response, config.runner.outputFormat);
 

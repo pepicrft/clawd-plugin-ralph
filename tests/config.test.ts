@@ -38,7 +38,7 @@ describe("config and scaffolding", () => {
     fs.writeFileSync(paths.planPath, "Plan content", "utf-8");
     fs.writeFileSync(paths.agentPath, "Agent content", "utf-8");
 
-    const prompt = await buildRalphPrompt(resolvePaths(config));
+    const prompt = await buildRalphPrompt(resolvePaths(config), "claude");
     expect(prompt).toContain("Prompt content");
     expect(prompt).toContain("Plan content");
     expect(prompt).toContain("Agent content");

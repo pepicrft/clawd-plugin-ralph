@@ -39,6 +39,7 @@ export default {
     parse: (value: unknown) => value as RalphConfigInput,
     uiHints: {
       projectRoot: { label: "Project Root", placeholder: "/Users/you/project" },
+      agent: { label: "Default Agent", placeholder: "claude" },
       provider: { label: "Provider", placeholder: "claude" },
       exitIndicatorThreshold: { label: "Exit Indicator Threshold", placeholder: "2" },
       maxLoops: { label: "Max Loops", placeholder: "20" },
@@ -121,10 +122,11 @@ export default {
           .command("prompt")
           .description("Print the compiled Ralph prompt")
           .option("-p, --project <id>", "Project id")
+          .option("-a, --agent <agent>", "Agent label (claude|codex)")
           .action(async (options: any) => {
             const projectConfig = getProjectConfig(pluginConfig, options.project);
             const paths = resolvePaths(projectConfig);
-            const prompt = await buildRalphPrompt(paths);
+            const prompt = await buildRalphPrompt(paths, options.agent ?? projectConfig.agent);
             console.log(prompt);
           });
 
@@ -132,13 +134,18 @@ export default {
           .command("run")
           .option("-l, --loops <count>", "Number of loops to run")
           .option("-p, --project <id>", "Project id")
+          .option("-a, --agent <agent>", "Agent label (claude|codex)")
           .option("--json", "Output JSON", false)
           .description("Run the Ralph loop")
           .action(async (options: any) => {
             const projectConfig = getProjectConfig(pluginConfig, options.project);
             const parsedLoops = Number.parseInt(options.loops, 10);
             const loops = Number.isNaN(parsedLoops) ? projectConfig.maxLoops : parsedLoops;
-            const result = await runRalphLoop(projectConfig, { loops, logger });
+            const result = await runRalphLoop(projectConfig, {
+              loops,
+              logger,
+              agent: options.agent,
+            });
 
             if (options.json) {
               console.log(JSON.stringify(result, null, 2));
@@ -257,12 +264,13 @@ export default {
         type: "object",
         properties: {
           projectId: { type: "string" },
+          agent: { type: "string" },
         },
       },
       async execute(_id: string, params: any) {
         const projectConfig = getProjectConfig(pluginConfig, params?.projectId);
         const paths = resolvePaths(projectConfig);
-        const prompt = await buildRalphPrompt(paths);
+        const prompt = await buildRalphPrompt(paths, params?.agent ?? projectConfig.agent);
         return {
           content: [
             {
