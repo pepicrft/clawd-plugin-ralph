@@ -9,6 +9,9 @@ export type RunnerConfigInput = {
   args?: string[];
   outputFormat?: "json" | "text";
   allowedTools?: string;
+  continueOnError?: boolean;
+  retryLimit?: number;
+  retryDelayMs?: number;
 };
 
 export type RalphProjectConfigInput = {
@@ -26,6 +29,7 @@ export type RalphProjectConfigInput = {
   provider?: "claude" | "codex" | "custom";
   exitIndicatorThreshold?: number;
   maxLoops?: number;
+  runForever?: boolean;
   sessionTimeoutHours?: number;
   runner?: RunnerConfigInput;
   git?: {
@@ -47,6 +51,9 @@ export type RunnerConfig = {
   args: string[];
   outputFormat: "json" | "text";
   allowedTools?: string;
+  continueOnError: boolean;
+  retryLimit: number;
+  retryDelayMs: number;
 };
 
 export type RalphConfig = {
@@ -64,6 +71,7 @@ export type RalphConfig = {
   provider: "claude" | "codex" | "custom";
   exitIndicatorThreshold: number;
   maxLoops: number;
+  runForever: boolean;
   sessionTimeoutHours: number;
   runner: RunnerConfig;
   git: {
@@ -135,8 +143,11 @@ const DEFAULT_HEARTBEAT_INTERVAL = 30000;
 const DEFAULT_HISTORY_FILE = ".ralph_session_history";
 const DEFAULT_EXIT_THRESHOLD = 2;
 const DEFAULT_MAX_LOOPS = 20;
+const DEFAULT_RUN_FOREVER = false;
 const DEFAULT_SESSION_TIMEOUT = 24;
 const DEFAULT_COMMIT_PREFIX = "[ralph]";
+const DEFAULT_RUNNER_RETRY_LIMIT = 0;
+const DEFAULT_RUNNER_RETRY_DELAY_MS = 5000;
 
 const RALPH_STATUS_INSTRUCTIONS = `You must include a RALPH_STATUS block at the end of every response.
 
@@ -206,9 +217,23 @@ const PENDING_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
 
 function defaultRunner(provider: "claude" | "codex" | "custom"): RunnerConfig {
   if (provider === "codex") {
-    return { command: "codex", args: ["--prompt", "{prompt}"], outputFormat: "text" };
+    return {
+      command: "codex",
+      args: ["--prompt", "{prompt}"],
+      outputFormat: "text",
+      continueOnError: false,
+      retryLimit: DEFAULT_RUNNER_RETRY_LIMIT,
+      retryDelayMs: DEFAULT_RUNNER_RETRY_DELAY_MS,
+    };
   }
-  return { command: "claude", args: ["-p", "{prompt}"], outputFormat: "text" };
+  return {
+    command: "claude",
+    args: ["-p", "{prompt}"],
+    outputFormat: "text",
+    continueOnError: false,
+    retryLimit: DEFAULT_RUNNER_RETRY_LIMIT,
+    retryDelayMs: DEFAULT_RUNNER_RETRY_DELAY_MS,
+  };
 }
 
 export function normalizeConfig(
@@ -219,11 +244,16 @@ export function normalizeConfig(
   const provider = input.provider ?? "claude";
   const runnerDefaults = defaultRunner(provider);
   const runnerInput = input.runner ?? {};
+  const maxLoops = input.maxLoops ?? DEFAULT_MAX_LOOPS;
+  const runForever = (input.runForever ?? DEFAULT_RUN_FOREVER) || maxLoops <= 0;
   const runner: RunnerConfig = {
     command: runnerInput.command ?? runnerDefaults.command,
     args: runnerInput.args ?? runnerDefaults.args,
     outputFormat: runnerInput.outputFormat ?? runnerDefaults.outputFormat,
     allowedTools: runnerInput.allowedTools,
+    continueOnError: runnerInput.continueOnError ?? false,
+    retryLimit: runnerInput.retryLimit ?? DEFAULT_RUNNER_RETRY_LIMIT,
+    retryDelayMs: runnerInput.retryDelayMs ?? DEFAULT_RUNNER_RETRY_DELAY_MS,
   };
   const gitInput = input.git ?? {};
 
@@ -241,7 +271,8 @@ export function normalizeConfig(
     historyFile: input.historyFile ?? DEFAULT_HISTORY_FILE,
     provider,
     exitIndicatorThreshold: input.exitIndicatorThreshold ?? DEFAULT_EXIT_THRESHOLD,
-    maxLoops: input.maxLoops ?? DEFAULT_MAX_LOOPS,
+    maxLoops,
+    runForever,
     sessionTimeoutHours: input.sessionTimeoutHours ?? DEFAULT_SESSION_TIMEOUT,
     runner,
     git: {
@@ -371,13 +402,17 @@ export async function buildRalphPrompt(paths: RalphPaths, agent: string): Promis
 }
 
 export function analyzeResponse(text: string): RalphAnalysis {
-  const completionMatches = COMPLETION_PATTERNS.filter((entry) => entry.pattern.test(text)).map(
-    (entry) => entry.label
-  );
-  const pendingIndicators = PENDING_PATTERNS.filter((entry) => entry.pattern.test(text)).map(
-    (entry) => entry.label
-  );
-  const exitSignal = /EXIT_SIGNAL\s*:\s*true/i.test(text);
+  const statusBlock = extractStatusBlock(text);
+  const analysisText = statusBlock ?? text;
+  const completionMatches = COMPLETION_PATTERNS.filter((entry) =>
+    entry.pattern.test(analysisText)
+  ).map((entry) => entry.label);
+  const pendingIndicators = PENDING_PATTERNS.filter((entry) =>
+    entry.pattern.test(analysisText)
+  ).map((entry) => entry.label);
+  const exitSignal = statusBlock
+    ? /EXIT_SIGNAL\s*:\s*true/i.test(statusBlock)
+    : /EXIT_SIGNAL\s*:\s*true/i.test(text);
 
   return {
     exitSignal,
@@ -388,7 +423,11 @@ export function analyzeResponse(text: string): RalphAnalysis {
 }
 
 export function shouldExit(analysis: RalphAnalysis, threshold: number): boolean {
-  return analysis.exitSignal && analysis.completionIndicators >= threshold;
+  return (
+    analysis.exitSignal &&
+    analysis.completionIndicators >= threshold &&
+    analysis.pendingIndicators.length === 0
+  );
 }
 
 export function extractRalphSummary(text: string): string | null {
@@ -405,12 +444,24 @@ export function buildCommitMessage(prefix: string, summary: string | null): stri
 
 export async function runRalphLoop(
   config: RalphConfig,
-  options: { loops?: number; logger?: Console; agent?: string } = {}
+  options: {
+    loops?: number;
+    logger?: Console;
+    agent?: string;
+    runForever?: boolean;
+    continueOnError?: boolean;
+    runnerRetryLimit?: number;
+    runnerRetryDelayMs?: number;
+  } = {}
 ): Promise<RalphLoopResult> {
   const logger = options.logger ?? console;
   const paths = await ensureProjectStructure(config);
   const loops = options.loops ?? config.maxLoops;
   const agent = options.agent ?? config.agent;
+  const runForever = options.runForever ?? config.runForever ?? loops <= 0;
+  const continueOnError = options.continueOnError ?? config.runner.continueOnError;
+  const runnerRetryLimit = options.runnerRetryLimit ?? config.runner.retryLimit;
+  const runnerRetryDelayMs = options.runnerRetryDelayMs ?? config.runner.retryDelayMs;
 
   let lastResponse = "";
   let lastAnalysis: RalphAnalysis = {
@@ -425,37 +476,70 @@ export async function runRalphLoop(
 
   let loopsRun = 0;
 
-  for (let i = 0; i < loops; i += 1) {
+  let loopIndex = 0;
+  while (runForever || loopIndex < loops) {
+    const loopNumber = loopIndex + 1;
     const prompt = await buildRalphPrompt(paths, agent);
-    const response = await runRunner(config.runner, prompt, session.sessionId, logger);
-    const text = extractTextFromRunnerOutput(response, config.runner.outputFormat);
+    let text = "";
+    try {
+      const response = await runRunnerWithRetry(
+        {
+          ...config.runner,
+          continueOnError,
+          retryLimit: runnerRetryLimit,
+          retryDelayMs: runnerRetryDelayMs,
+        },
+        prompt,
+        session.sessionId,
+        logger
+      );
+      text = extractTextFromRunnerOutput(response, config.runner.outputFormat);
+    } catch (error) {
+      if (!continueOnError) {
+        throw error;
+      }
+      const now = new Date().toISOString();
+      await writeHeartbeat(paths.heartbeatPath, {
+        sessionId: session.sessionId,
+        lastRun: now,
+        lastLoop: loopNumber,
+        lastAnalysis,
+        heartbeatAt: now,
+      });
+      session.lastRun = now;
+      await writeSession(paths.sessionPath, session);
+      loopIndex += 1;
+      await sleep(runnerRetryDelayMs);
+      continue;
+    }
 
     lastResponse = text;
     lastAnalysis = analyzeResponse(text);
 
     await appendLog(paths.logPath, {
-      loop: i + 1,
+      loop: loopNumber,
       response: text,
       analysis: lastAnalysis,
     });
     await writeHeartbeat(paths.heartbeatPath, {
       sessionId: session.sessionId,
       lastRun: new Date().toISOString(),
-      lastLoop: i + 1,
+      lastLoop: loopNumber,
       lastAnalysis,
       heartbeatAt: new Date().toISOString(),
     });
     session.lastRun = new Date().toISOString();
     await writeSession(paths.sessionPath, session);
-    loopsRun = i + 1;
+    loopsRun = loopNumber;
+    loopIndex += 1;
 
-    if (shouldExit(lastAnalysis, config.exitIndicatorThreshold)) {
+    if (!runForever && shouldExit(lastAnalysis, config.exitIndicatorThreshold)) {
       logger.info("Ralph exit conditions met.");
       break;
     }
   }
 
-  if (shouldExit(lastAnalysis, config.exitIndicatorThreshold)) {
+  if (!runForever && shouldExit(lastAnalysis, config.exitIndicatorThreshold)) {
     await maybeCommitOnExit(config, lastResponse, logger);
   }
 
@@ -533,6 +617,29 @@ async function runRunner(
   }
 }
 
+async function runRunnerWithRetry(
+  runner: RunnerConfig,
+  prompt: string,
+  sessionId: string,
+  logger: Console
+): Promise<string> {
+  const attempts = Math.max(1, 1 + runner.retryLimit);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await runRunner(runner, prompt, sessionId, logger);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts) break;
+      logger.warn(
+        `Runner attempt ${attempt} failed. Retrying in ${runner.retryDelayMs}ms.`
+      );
+      await sleep(runner.retryDelayMs);
+    }
+  }
+  throw lastError;
+}
+
 async function maybeCommitOnExit(
   config: RalphConfig,
   responseText: string,
@@ -606,6 +713,12 @@ function extractTextFromJson(value: any): string | null {
   return null;
 }
 
+function extractStatusBlock(text: string): string | null {
+  const match = text.match(/RALPH_STATUS:\s*([\s\S]*)$/i);
+  if (!match) return null;
+  return match[1].trim() || null;
+}
+
 function createSessionId(): string {
   return crypto.randomBytes(8).toString("hex");
 }
@@ -636,9 +749,10 @@ async function readSession(filePath: string): Promise<RalphSession | null> {
 }
 
 function isSessionExpired(session: RalphSession, timeoutHours: number): boolean {
-  const startedAt = new Date(session.startedAt).getTime();
-  if (!Number.isFinite(startedAt)) return true;
-  const elapsedMs = Date.now() - startedAt;
+  const reference = session.lastRun ?? session.startedAt;
+  const referenceMs = new Date(reference).getTime();
+  if (!Number.isFinite(referenceMs)) return true;
+  const elapsedMs = Date.now() - referenceMs;
   return elapsedMs > timeoutHours * 60 * 60 * 1000;
 }
 
@@ -659,6 +773,11 @@ async function appendLog(
     ...entry,
   };
   await fsp.appendFile(logPath, `${JSON.stringify(payload)}\n`, "utf-8");
+}
+
+async function sleep(ms: number): Promise<void> {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function readFileIfExists(filePath: string): Promise<string | null> {

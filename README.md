@@ -35,6 +35,7 @@ clawdbot plugins install github:pepicrft/clawd-plugin-ralph
           provider: "claude",
           exitIndicatorThreshold: 2,
           maxLoops: 20,
+          runForever: false,
           sessionTimeoutHours: 24,
           heartbeatFile: ".ralph_heartbeat.json",
           heartbeatIntervalMs: 30000,
@@ -47,7 +48,10 @@ clawdbot plugins install github:pepicrft/clawd-plugin-ralph
           },
           runner: {
             command: "claude",
-            args: ["-p", "{prompt}"]
+            args: ["-p", "{prompt}"],
+            continueOnError: false,
+            retryLimit: 0,
+            retryDelayMs: 5000
           }
         }
       }
@@ -123,6 +127,9 @@ clawdbot ralph run --loops 3
 
 # Run with a specific agent label
 clawdbot ralph run --agent codex --loops 2
+
+# Run continuously and keep looping on runner errors
+clawdbot ralph run --forever --continue-on-error
 
 # Check heartbeat status
 clawdbot ralph status

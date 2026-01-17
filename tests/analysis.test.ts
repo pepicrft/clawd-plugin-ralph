@@ -3,13 +3,11 @@ import { analyzeResponse, buildCommitMessage, extractRalphSummary, shouldExit } 
 
 describe("response analysis", () => {
   it("detects exit signal and completion indicators", () => {
-    const response = `All tasks complete. Tests passing.
-
-RALPH_STATUS:
+    const response = `RALPH_STATUS:
 EXIT_SIGNAL: true
-SUMMARY: done
+SUMMARY: all tasks complete
 NEXT_STEPS: none
-CHANGES: none
+CHANGES: tests passing
 TESTS: not run`;
 
     const analysis = analyzeResponse(response);

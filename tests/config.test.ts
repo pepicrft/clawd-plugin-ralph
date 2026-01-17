@@ -18,6 +18,15 @@ describe("config and scaffolding", () => {
     expect(config.planFile).toBe("@fix_plan.md");
   });
 
+  it("enables runForever when requested or maxLoops <= 0", () => {
+    const baseDir = path.join(os.tmpdir(), "ralph-forever");
+    const configured = normalizeConfig({ runForever: true }, baseDir);
+    expect(configured.runForever).toBe(true);
+
+    const unlimited = normalizeConfig({ maxLoops: 0 }, baseDir);
+    expect(unlimited.runForever).toBe(true);
+  });
+
   it("creates the project structure", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-"));
     const config = normalizeConfig({ projectRoot });

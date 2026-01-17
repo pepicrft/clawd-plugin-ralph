@@ -46,11 +46,15 @@ export default {
       sessionTimeoutHours: { label: "Session Timeout (hours)", placeholder: "24" },
       heartbeatFile: { label: "Heartbeat File", placeholder: ".ralph_heartbeat.json" },
       heartbeatIntervalMs: { label: "Heartbeat Interval (ms)", placeholder: "30000" },
+      runForever: { label: "Run Forever" },
       "git.enabled": { label: "Git Enabled" },
       "git.onExit": { label: "Git Commit On Exit" },
       "git.push": { label: "Git Push On Exit" },
       "git.commitPrefix": { label: "Git Commit Prefix", placeholder: "[ralph]" },
       "git.remote": { label: "Git Remote", placeholder: "origin" },
+      "runner.continueOnError": { label: "Continue On Runner Error" },
+      "runner.retryLimit": { label: "Runner Retry Limit", placeholder: "0" },
+      "runner.retryDelayMs": { label: "Runner Retry Delay (ms)", placeholder: "5000" },
     },
   },
   register(api: any) {
@@ -135,16 +139,32 @@ export default {
           .option("-l, --loops <count>", "Number of loops to run")
           .option("-p, --project <id>", "Project id")
           .option("-a, --agent <agent>", "Agent label (claude|codex)")
+          .option("--forever", "Run continuously", false)
+          .option("--continue-on-error", "Keep looping when runner fails", false)
+          .option("--runner-retry-limit <count>", "Retry runner failures before continuing")
+          .option("--runner-retry-delay-ms <ms>", "Delay between runner retries in ms")
           .option("--json", "Output JSON", false)
           .description("Run the Ralph loop")
           .action(async (options: any) => {
             const projectConfig = getProjectConfig(pluginConfig, options.project);
             const parsedLoops = Number.parseInt(options.loops, 10);
             const loops = Number.isNaN(parsedLoops) ? projectConfig.maxLoops : parsedLoops;
+            const parsedRetryLimit = Number.parseInt(options.runnerRetryLimit, 10);
+            const runnerRetryLimit = Number.isNaN(parsedRetryLimit)
+              ? undefined
+              : parsedRetryLimit;
+            const parsedRetryDelay = Number.parseInt(options.runnerRetryDelayMs, 10);
+            const runnerRetryDelayMs = Number.isNaN(parsedRetryDelay)
+              ? undefined
+              : parsedRetryDelay;
             const result = await runRalphLoop(projectConfig, {
               loops,
               logger,
               agent: options.agent,
+              runForever: options.forever,
+              continueOnError: options.continueOnError,
+              runnerRetryLimit,
+              runnerRetryDelayMs,
             });
 
             if (options.json) {
