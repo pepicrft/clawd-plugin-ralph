@@ -60,6 +60,30 @@ clawdbot plugins install github:pepicrft/clawd-plugin-ralph
 }
 ```
 
+### Run forever (no exit on completion)
+
+```json5
+{
+  plugins: {
+    entries: {
+      "clawd-plugin-ralph": {
+        enabled: true,
+        config: {
+          projectRoot: "/Users/you/ralph-project",
+          runForever: true,
+          maxLoops: 0,
+          runner: {
+            continueOnError: true,
+            retryLimit: 3,
+            retryDelayMs: 10000
+          }
+        }
+      }
+    }
+  }
+}
+```
+
 ### Multiple projects
 
 Configure multiple Ralph targets under a single Gateway by defining `projects`:
