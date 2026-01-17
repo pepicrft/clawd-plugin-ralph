@@ -1,6 +1,6 @@
 {
   "name": "clawd-plugin-ralph",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Clawdbot plugin for Ralph-style agentic coding loops",
   "main": "dist/index.js",
   "type": "module",

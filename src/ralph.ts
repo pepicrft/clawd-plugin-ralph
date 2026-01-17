@@ -521,7 +521,7 @@ export async function importPrd(
     }
   }
 
-  const rawOutput = await runRunnerWithRetry(config.runner, prompt, createSessionId(), logger);
+  const rawOutput = await runRunnerWithRetry(config.runner, prompt, createSessionId(), logger, paths.projectRoot);
   const files = parsePrdConversionOutput(rawOutput, config.runner.outputFormat);
 
   if (!files) {
@@ -628,7 +628,8 @@ export async function runRalphLoop(
         },
         prompt,
         session.sessionId,
-        logger
+        logger,
+        config.projectRoot
       );
       text = extractTextFromRunnerOutput(response, config.runner.outputFormat);
     } catch (error) {
@@ -741,11 +742,12 @@ async function runRunner(
   runner: RunnerConfig,
   prompt: string,
   sessionId: string,
-  logger: Console
+  logger: Console,
+  cwd?: string
 ): Promise<string> {
   const args = substituteArgs(runner, prompt, sessionId);
   try {
-    const result = await execFileAsync(runner.command, args, { encoding: "utf-8" });
+    const result = await execFileAsync(runner.command, args, { encoding: "utf-8", cwd });
     return result.stdout.trim();
   } catch (error: any) {
     const message = String(error?.message || error);
@@ -758,13 +760,14 @@ async function runRunnerWithRetry(
   runner: RunnerConfig,
   prompt: string,
   sessionId: string,
-  logger: Console
+  logger: Console,
+  cwd?: string
 ): Promise<string> {
   const attempts = Math.max(1, 1 + runner.retryLimit);
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return await runRunner(runner, prompt, sessionId, logger);
+      return await runRunner(runner, prompt, sessionId, logger, cwd);
     } catch (error) {
       lastError = error;
       if (attempt >= attempts) break;
