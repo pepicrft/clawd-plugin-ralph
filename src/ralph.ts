@@ -129,6 +129,12 @@ export type RalphHeartbeat = {
   heartbeatAt: string | null;
 };
 
+export type PrdImportResult = {
+  projectRoot: string;
+  sourceFile: string;
+  filesWritten: string[];
+};
+
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_PROMPT_FILE = "PROMPT.md";
@@ -148,6 +154,7 @@ const DEFAULT_SESSION_TIMEOUT = 24;
 const DEFAULT_COMMIT_PREFIX = "[ralph]";
 const DEFAULT_RUNNER_RETRY_LIMIT = 0;
 const DEFAULT_RUNNER_RETRY_DELAY_MS = 5000;
+const PRD_REQUIRED_FILES = ["PROMPT.md", "@fix_plan.md", "specs/requirements.md"] as const;
 
 const RALPH_STATUS_INSTRUCTIONS = `You must include a RALPH_STATUS block at the end of every response.
 
@@ -196,6 +203,48 @@ const AGENT_TEMPLATE = `# @AGENT
 const REQUIREMENTS_TEMPLATE = `# Requirements
 
 Add detailed technical requirements here.
+`;
+
+const PRD_CONVERSION_TEMPLATE = `# PRD to Ralph Conversion Task
+
+You are converting a Product Requirements Document into Ralph project files.
+
+## Required Output
+
+Return JSON with this shape:
+
+{
+  "files": {
+    "PROMPT.md": "...",
+    "@fix_plan.md": "...",
+    "specs/requirements.md": "..."
+  }
+}
+
+If JSON is not possible, return plain text using file blocks:
+
+FILE: PROMPT.md
+\`\`\`markdown
+...
+\`\`\`
+
+FILE: @fix_plan.md
+\`\`\`markdown
+...
+\`\`\`
+
+FILE: specs/requirements.md
+\`\`\`markdown
+...
+\`\`\`
+
+## Content Guidance
+
+- PROMPT.md: project goal, scope, references, and Ralph requirements.
+- @fix_plan.md: prioritized tasks with clear next steps.
+- specs/requirements.md: detailed technical requirements.
+
+Use the provided PRD as the source of truth. Preserve constraints and success criteria.
 `;
 
 const COMPLETION_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
@@ -372,6 +421,25 @@ export async function ensureProjectStructure(
   return paths;
 }
 
+export function buildPrdConversionPrompt(
+  sourceName: string,
+  sourceContent: string
+): string {
+  const summary = formatJsonPrdSummary(sourceContent);
+  const sections = [
+    PRD_CONVERSION_TEMPLATE,
+    summary ? "## Parsed PRD Summary" : null,
+    summary ?? null,
+    "## Source PRD",
+    `File: ${sourceName}`,
+    "<PRD_SOURCE>",
+    sourceContent,
+    "</PRD_SOURCE>",
+  ].filter((section): section is string => Boolean(section && section.trim()));
+
+  return sections.join("\n\n");
+}
+
 async function writeIfMissing(
   filePath: string,
   contents: string,
@@ -399,6 +467,75 @@ export async function buildRalphPrompt(paths: RalphPaths, agent: string): Promis
   ];
 
   return sections.join("\n\n");
+}
+
+export function parsePrdConversionOutput(
+  output: string,
+  outputFormat: "json" | "text"
+): Record<string, string> | null {
+  const candidates: string[] = [];
+
+  if (outputFormat === "json") {
+    candidates.push(output);
+  }
+
+  const text = extractTextFromRunnerOutput(output, outputFormat);
+  if (text && text !== output) {
+    candidates.push(text);
+  } else if (outputFormat === "text") {
+    candidates.push(output);
+  }
+
+  for (const candidate of candidates) {
+    const parsed = parsePrdFilesFromJson(candidate);
+    if (parsed) return parsed;
+  }
+
+  for (const candidate of candidates) {
+    const parsed = parsePrdFilesFromText(candidate);
+    if (parsed) return parsed;
+  }
+
+  return null;
+}
+
+export async function importPrd(
+  config: RalphConfig,
+  options: {
+    sourceFile: string;
+    overwrite?: boolean;
+    logger?: Console;
+  }
+): Promise<PrdImportResult> {
+  const logger = options.logger ?? console;
+  const sourcePath = path.resolve(process.cwd(), options.sourceFile);
+  const sourceContent = await fsp.readFile(sourcePath, "utf-8");
+  const prompt = buildPrdConversionPrompt(path.basename(sourcePath), sourceContent);
+  const paths = resolvePaths(config);
+
+  await ensureImportDirectories(paths.projectRoot, paths.specsDir, paths.logsDir);
+  if (!options.overwrite) {
+    const existing = await findExistingFiles(paths.projectRoot, PRD_REQUIRED_FILES);
+    if (existing.length > 0) {
+      throw new Error(`Refusing to overwrite existing files: ${existing.join(", ")}`);
+    }
+  }
+
+  const rawOutput = await runRunnerWithRetry(config.runner, prompt, createSessionId(), logger);
+  const files = parsePrdConversionOutput(rawOutput, config.runner.outputFormat);
+
+  if (!files) {
+    throw new Error("Unable to parse PRD conversion output.");
+  }
+
+  const written = await writePrdFiles(paths.projectRoot, files, options.overwrite);
+  await copySourcePrd(paths.projectRoot, sourcePath, options.overwrite);
+
+  return {
+    projectRoot: paths.projectRoot,
+    sourceFile: sourcePath,
+    filesWritten: written,
+  };
 }
 
 export function analyzeResponse(text: string): RalphAnalysis {
@@ -698,6 +835,7 @@ function extractTextFromJson(value: any): string | null {
   if (typeof value === "object") {
     if (typeof value.text === "string") return value.text;
     if (typeof value.output === "string") return value.output;
+    if (typeof value.result === "string") return value.result;
     if (typeof value.message === "string") return value.message;
     if (typeof value.content === "string") return value.content;
     if (Array.isArray(value.content)) {
@@ -711,6 +849,203 @@ function extractTextFromJson(value: any): string | null {
   }
 
   return null;
+}
+
+function parsePrdFilesFromJson(raw: string): Record<string, string> | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsePrdFilesFromJsonValue(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function parsePrdFilesFromJsonValue(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== "object") return null;
+
+  const direct = parsePrdFilesObject(value as Record<string, unknown>);
+  if (direct) return direct;
+
+  const wrapper = (value as Record<string, unknown>).files;
+  if (wrapper && typeof wrapper === "object" && !Array.isArray(wrapper)) {
+    const wrapped = parsePrdFilesObject(wrapper as Record<string, unknown>);
+    if (wrapped) return wrapped;
+  }
+
+  const textCandidate = extractTextFromJson(value);
+  if (textCandidate) {
+    return parsePrdFilesFromJson(textCandidate) ?? parsePrdFilesFromText(textCandidate);
+  }
+
+  return null;
+}
+
+function parsePrdFilesObject(
+  value: Record<string, unknown>
+): Record<string, string> | null {
+  const files: Record<string, string> = {};
+  for (const [key, content] of Object.entries(value)) {
+    if (typeof content === "string") {
+      files[key] = content;
+    }
+  }
+
+  if (Object.keys(files).length === 0) return null;
+  return files;
+}
+
+function parsePrdFilesFromText(raw: string): Record<string, string> | null {
+  const matches = [...raw.matchAll(/^FILE:\s*(.+)\n```[a-zA-Z0-9_-]*\n([\s\S]*?)```/gm)];
+  if (matches.length === 0) return null;
+
+  const files: Record<string, string> = {};
+  for (const match of matches) {
+    const name = match[1]?.trim();
+    const content = match[2] ?? "";
+    if (name) {
+      files[name] = content.trimEnd();
+    }
+  }
+
+  return Object.keys(files).length > 0 ? files : null;
+}
+
+function formatJsonPrdSummary(sourceContent: string): string | null {
+  const parsed = tryParseJson(sourceContent);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+
+  const value = parsed as Record<string, unknown>;
+  const hasKnownFields =
+    "project" in value ||
+    "description" in value ||
+    "userStories" in value ||
+    "branchName" in value;
+  if (!hasKnownFields) return null;
+
+  const lines: string[] = [];
+  const project = readString(value.project);
+  const branch = readString(value.branchName);
+  const description = readString(value.description);
+  if (project) lines.push(`Project: ${project}`);
+  if (branch) lines.push(`Branch: ${branch}`);
+  if (description) lines.push(`Description: ${description}`);
+
+  const stories = Array.isArray(value.userStories) ? value.userStories : [];
+  if (stories.length > 0) {
+    lines.push("User stories:");
+    for (const story of stories) {
+      if (!story || typeof story !== "object") continue;
+      const record = story as Record<string, unknown>;
+      const id = readString(record.id);
+      const title = readString(record.title);
+      const storyDescription = readString(record.description);
+      const priority = record.priority;
+      const priorityLabel =
+        typeof priority === "number" ? `P${priority}` : readString(priority);
+      const header = [priorityLabel, id, title].filter(Boolean).join(" - ");
+      if (header) {
+        lines.push(`- ${header}`);
+      }
+      if (storyDescription) {
+        lines.push(`  ${storyDescription}`);
+      }
+
+      const acceptance = Array.isArray(record.acceptanceCriteria)
+        ? record.acceptanceCriteria
+        : [];
+      if (acceptance.length > 0) {
+        lines.push("  Acceptance criteria:");
+        for (const item of acceptance) {
+          const entry = readString(item);
+          if (entry) lines.push(`  - ${entry}`);
+        }
+      }
+    }
+  }
+
+  return lines.length > 0 ? lines.join("\n") : null;
+}
+
+function tryParseJson(sourceContent: string): unknown | null {
+  const trimmed = sourceContent.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+function readString(value: unknown): string | null {
+  if (typeof value === "string") return value.trim();
+  return null;
+}
+
+async function ensureImportDirectories(
+  projectRoot: string,
+  specsDir: string,
+  logsDir: string
+): Promise<void> {
+  await fsp.mkdir(projectRoot, { recursive: true });
+  await fsp.mkdir(specsDir, { recursive: true });
+  await fsp.mkdir(logsDir, { recursive: true });
+}
+
+async function findExistingFiles(
+  projectRoot: string,
+  files: readonly string[]
+): Promise<string[]> {
+  const existing: string[] = [];
+  for (const file of files) {
+    const target = path.resolve(projectRoot, file);
+    if (await fileExists(target)) {
+      existing.push(file);
+    }
+  }
+  return existing;
+}
+
+async function writePrdFiles(
+  projectRoot: string,
+  files: Record<string, string>,
+  overwrite = false
+): Promise<string[]> {
+  const missing = PRD_REQUIRED_FILES.filter((file) => !(file in files));
+  if (missing.length > 0) {
+    throw new Error(`Missing required files: ${missing.join(", ")}`);
+  }
+
+  const written: string[] = [];
+  for (const [relative, content] of Object.entries(files)) {
+    const target = path.resolve(projectRoot, relative);
+    const safeRelative = path.relative(projectRoot, target);
+    if (safeRelative.startsWith("..") || path.isAbsolute(safeRelative)) {
+      throw new Error(`Refusing to write outside project root: ${relative}`);
+    }
+
+    if (!overwrite && (await fileExists(target))) {
+      continue;
+    }
+
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    await fsp.writeFile(target, `${content.trimEnd()}\n`, "utf-8");
+    written.push(relative);
+  }
+
+  return written;
+}
+
+async function copySourcePrd(
+  projectRoot: string,
+  sourcePath: string,
+  overwrite = false
+): Promise<void> {
+  const targetPath = path.join(projectRoot, path.basename(sourcePath));
+  if (!overwrite && (await fileExists(targetPath))) return;
+  await fsp.copyFile(sourcePath, targetPath);
 }
 
 function extractStatusBlock(text: string): string | null {

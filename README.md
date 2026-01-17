@@ -7,6 +7,7 @@ A Clawdbot plugin that applies the Ralph pattern for agentic coding: structured 
 - Ralph project scaffolding (`PROMPT.md`, `@fix_plan.md`, `@AGENT.md`, `specs/`, `logs/`)
 - Prompt assembly that enforces an explicit `RALPH_STATUS` block
 - Response analysis with exit-signal gating (completion indicators + `EXIT_SIGNAL: true`)
+- PRD/spec import into Ralph project files
 - CLI commands + tools for automation
 
 ## Installation
@@ -163,6 +164,12 @@ clawdbot ralph status --project micelio
 
 # Analyze a response file
 clawdbot ralph analyze --file response.txt
+
+# Convert a PRD/spec into a Ralph project (supports JSON/Markdown/text)
+clawdbot ralph import path/to/prd.json
+
+# Convert and write to a specific directory
+clawdbot ralph import path/to/requirements.md my-project
 ```
 
 ## Tools

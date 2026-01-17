@@ -6,6 +6,7 @@ import {
   ensureProjectStructure,
   getProjectConfig,
   heartbeatStatus,
+  importPrd,
   normalizePluginConfig,
   resolvePaths,
   runRalphLoop,
@@ -55,6 +56,8 @@ export default {
       "runner.continueOnError": { label: "Continue On Runner Error" },
       "runner.retryLimit": { label: "Runner Retry Limit", placeholder: "0" },
       "runner.retryDelayMs": { label: "Runner Retry Delay (ms)", placeholder: "5000" },
+      "runner.outputFormat": { label: "Runner Output Format", placeholder: "text" },
+      "runner.allowedTools": { label: "Runner Allowed Tools" },
     },
   },
   register(api: any) {
@@ -132,6 +135,36 @@ export default {
             const paths = resolvePaths(projectConfig);
             const prompt = await buildRalphPrompt(paths, options.agent ?? projectConfig.agent);
             console.log(prompt);
+          });
+
+        ralph
+          .command("import <source> [directory]")
+          .option("--force", "Overwrite existing files", false)
+          .option("-p, --project <id>", "Project id")
+          .description("Convert a PRD/spec file into a Ralph project")
+          .action(async (source: string, directory: string | undefined, options: any) => {
+            const projectConfig = getProjectConfig(pluginConfig, options.project);
+            const targetRoot = directory
+              ? path.resolve(process.cwd(), directory)
+              : path.resolve(
+                  process.cwd(),
+                  path.basename(source, path.extname(source)) || "ralph-project"
+                );
+            const targetConfig = {
+              ...projectConfig,
+              projectRoot: targetRoot,
+            };
+
+            const result = await importPrd(targetConfig, {
+              sourceFile: source,
+              overwrite: options.force,
+              logger,
+            });
+
+            console.log(`PRD import complete at ${result.projectRoot}`);
+            if (result.filesWritten.length > 0) {
+              console.log(`Files written: ${result.filesWritten.join(", ")}`);
+            }
           });
 
         ralph
