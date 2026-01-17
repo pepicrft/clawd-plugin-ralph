@@ -177,6 +177,8 @@ clawdbot ralph import path/to/requirements.md my-project
 - `ralph_init_project`
 - `ralph_next_prompt`
 - `ralph_analyze_response`
+- `ralph_run`
+- `ralph_import`
 - `ralph_status`
 
 ## How It Works

@@ -369,6 +369,94 @@ export default {
     });
 
     api.registerTool({
+      name: "ralph_run",
+      description: "Run the Ralph loop.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string" },
+          loops: { type: "number" },
+          agent: { type: "string" },
+          runForever: { type: "boolean" },
+          continueOnError: { type: "boolean" },
+          runnerRetryLimit: { type: "number" },
+          runnerRetryDelayMs: { type: "number" },
+        },
+      },
+      async execute(_id: string, params: any) {
+        const projectConfig = getProjectConfig(pluginConfig, params?.projectId);
+        const parsedLoops = Number.parseInt(params?.loops, 10);
+        const loops = Number.isNaN(parsedLoops) ? projectConfig.maxLoops : parsedLoops;
+        const parsedRetryLimit = Number.parseInt(params?.runnerRetryLimit, 10);
+        const runnerRetryLimit = Number.isNaN(parsedRetryLimit)
+          ? undefined
+          : parsedRetryLimit;
+        const parsedRetryDelay = Number.parseInt(params?.runnerRetryDelayMs, 10);
+        const runnerRetryDelayMs = Number.isNaN(parsedRetryDelay)
+          ? undefined
+          : parsedRetryDelay;
+        const result = await runRalphLoop(projectConfig, {
+          loops,
+          logger,
+          agent: params?.agent,
+          runForever: Boolean(params?.runForever),
+          continueOnError: params?.continueOnError ?? false,
+          runnerRetryLimit,
+          runnerRetryDelayMs,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      },
+    });
+
+    api.registerTool({
+      name: "ralph_import",
+      description: "Convert a PRD/spec file into a Ralph project.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string" },
+          source: { type: "string" },
+          directory: { type: "string" },
+          force: { type: "boolean" },
+        },
+        required: ["source"],
+      },
+      async execute(_id: string, params: any) {
+        const projectConfig = getProjectConfig(pluginConfig, params?.projectId);
+        const targetRoot = params?.directory
+          ? path.resolve(process.cwd(), params.directory)
+          : path.resolve(
+              process.cwd(),
+              path.basename(params.source, path.extname(params.source)) || "ralph-project"
+            );
+        const targetConfig = {
+          ...projectConfig,
+          projectRoot: targetRoot,
+        };
+        const result = await importPrd(targetConfig, {
+          sourceFile: params.source,
+          overwrite: Boolean(params?.force),
+          logger,
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      },
+    });
+
+    api.registerTool({
       name: "ralph_status",
       description: "Get the latest Ralph heartbeat status.",
       parameters: {
